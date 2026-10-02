@@ -138,6 +138,7 @@ LLIBS	= \
 	$(subst /$(space),/,$(patsubst -L%,%/,$(patsubst -l%,$(EXT_LIB_PREFIX)%.a,$(tksao_LIB_SPEC)))) \
 	$(libdir)/libfuntools.a \
 	$(libdir)/libxpa.a \
+	$(libdir)/libasdf.a \
 	$(libdir)/liblz4.a \
 	$(libdir)/libbz2.a
 
@@ -216,12 +217,17 @@ debug: ds9base ds9.zip
 
 endif
 
+# libasdf registers its compressors from constructor functions that nothing
+# references, so a plain static link drops them; hence --whole-archive
 ds9base	: $(OBJS) $(LLIBS)
 	$(RM) $@
 	$(CXX) $(CFLAGS) -o $@ \
 	$(OBJS) \
-	$(LLIBS) \
+	$(filter-out $(libdir)/libasdf.a,$(LLIBS)) \
+	-Wl,--whole-archive $(libdir)/libasdf.a -Wl,--no-whole-archive \
+	$(libdir)/liblz4.a $(libdir)/libbz2.a \
 	-L$(prefix)/openssl -lssl -lcrypto \
+	-lfyaml -lstatgrab -lpthread -lmd -lz \
 	$(LIBS) \
 	$(TK_LIBS)
 

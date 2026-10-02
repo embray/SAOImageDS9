@@ -101,7 +101,7 @@ TKIMGTMPFILES = \
 .NOTPARALLEL :
 .PHONY	: all dirs ds9 tclxml tclxmlrpc tclzipfs tls xpa zlib lz4 bzip2
 .PHONY	: tkblt tclfitsy tkcon tkhtml1 tkimg tkmpeg tksvg tkagif tksao tktable
-.PHONY	: vector fitsy libyaml ast funtools openssl
+.PHONY	: vector fitsy libyaml libasdf ast funtools openssl
 
 all	: saods9
 
@@ -579,6 +579,32 @@ libyaml/Makefile :
 	--disable-shared --enable-static \
 	$(CONFIGFLAGS) $(if $(TARGET),--host=$(TARGET),) \
 	$(PREFIX)
+
+#-------------------------- libasdf
+
+# Not vendored: built out-of-tree from an existing libasdf source checkout
+# and installed into $(prefix) as a static library. libfyaml and the
+# compression libraries come from the system.
+LIBASDF_SRC ?= $(HOME)/src/asdf-format/libasdf
+
+libasdf	: build/libasdf/Makefile
+	@echo ""
+	@echo "*** $@ ***"
+	$(MAKE) -C build/libasdf -j $(JOBS) install
+
+build/libasdf/Makefile :
+	@echo ""
+	@echo "*** $@ ***"
+	mkdir -p build/libasdf
+	cd build/libasdf; \
+	$(LIBASDF_SRC)/configure \
+	--disable-shared --enable-static --disable-tool \
+	$(PREFIX)
+
+libasdfclean :
+	@echo ""
+	@echo "*** $@ ***"
+	$(RM) -r build/libasdf
 
 #-------------------------- ast
 

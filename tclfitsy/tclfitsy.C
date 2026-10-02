@@ -15,7 +15,7 @@ using namespace std;
 #include "tclfitsy.h"
 #include "head.h"
 #include "mmapincr.h"
-#include "asdf.h"
+#include "asdffile.h"
 #include "allocgz.h"
 #include "util.h"
 #include "vector.h"
