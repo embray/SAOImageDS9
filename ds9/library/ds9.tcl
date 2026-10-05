@@ -355,6 +355,7 @@ DS9Def
 2MASSDef
 3DDef
 AnalysisDef
+AsdfDef
 AutoSaveDef
 BinDef
 BlinkDef

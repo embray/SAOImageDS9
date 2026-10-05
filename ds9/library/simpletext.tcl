@@ -288,15 +288,31 @@ proc SimpleTextPostScript {varname} {
 	    return
 	}
     }
-    puts -nonewline $ch [$var(text) get 1.0 end]
+    puts -nonewline $ch [SimpleTextContents $varname]
     close $ch
+}
+
+# What Save and Print write: the text widget's contents, unless the dialog
+# supplies its own (var(contents), a command prefix taking the varname).
+proc SimpleTextContents {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    if {[info exists var(contents)]} {
+	return [{*}$var(contents) $varname]
+    }
+    return [$var(text) get 1.0 end]
 }
 
 proc SimpleTextSaveFile {varname} {
     upvar #0 $varname var
     global $varname
 
-    set filename [SaveFileDialog textfbox $var(top)]
+    set fbox textfbox
+    if {[info exists var(fbox)]} {
+	set fbox $var(fbox)
+    }
+    set filename [SaveFileDialog $fbox $var(top)]
     if {$filename != {}} {
 	SimpleTextSaveFileName $varname $filename
     }
@@ -310,7 +326,7 @@ proc SimpleTextSaveFileName {varname filename} {
 	Error [msgcat::mc {An error has occurred while saving}]
 	return
     }
-    puts -nonewline $ch [$var(text) get 1.0 end]
+    puts -nonewline $ch [SimpleTextContents $varname]
     close $ch
 }
 

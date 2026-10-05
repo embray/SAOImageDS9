@@ -438,6 +438,8 @@ proc AsdfDestroyHeader {frame} {
     if {[info exists $varname]} {
 	SimpleTextDestroy $varname
     }
+
+    AsdfHeaderTreeDestroy "asdfhdr-$frame"
 }
 
 # Drops the cache and closes the viewer with it, so it can't keep showing
@@ -466,11 +468,398 @@ proc DisplayAsdfHeader {frame} {
 	return
     }
 
+    # the tree navigator; the plain text dump if the YAML cannot be walked
+    if {[catch {fitsy asdf yaml $asdf(file,$frame)} nodes]} {
+	AsdfHeaderText $frame
+	return
+    }
+    AsdfHeaderTreeDialog $frame $nodes
+}
+
+# The YAML tree as plain text, which is also what the header viewer
+# showed before it became a tree.
+proc AsdfHeaderText {frame} {
+    global asdf
+
+    if {![AsdfHasTree $frame]} {
+	return
+    }
+
     set varname "asdf-$frame"
     global $varname
 
     SimpleTextDialog $varname [file tail $asdf(file,$frame)] 80 40 \
 	insert top $asdf(tree,$frame)
+}
+
+# The header viewer for an ASDF frame: the YAML directives as text, then
+# the document as a tree. Any node can be copied, which copies its source
+# text verbatim (see AsdfYamlNodeText). `nodes' is `fitsy asdf yaml'.
+proc AsdfHeaderTreeDialog {frame nodes} {
+    global asdf
+    global asdftree
+    global ds9
+
+    set varname "asdfhdr-$frame"
+    upvar #0 $varname var
+    global $varname
+
+    set var(top) ".${varname}"
+    set var(mb) ".${varname}mb"
+    if {[winfo exists $var(top)]} {
+	raise $var(top)
+	return
+    }
+
+    set var(frame) $frame
+    set tree $asdf(tree,$frame)
+    set var(tree) $tree
+
+    set w $var(top)
+    set mb $var(mb)
+    Toplevel $w $mb 7 [file tail $asdf(file,$frame)] \
+	[list AsdfHeaderTreeDestroy $varname]
+
+    # Save and Print are SimpleText's, writing the tree text rather than a
+    # text widget's contents, and saving as YAML
+    set var(contents) AsdfHeaderTreeContents
+    set var(fbox) yamlfbox
+    set var(search) {}
+
+    $mb add cascade -label [msgcat::mc {File}] -menu $mb.file
+    ThemeMenu $mb.file
+    $mb.file add command -label "[msgcat::mc {Save}]..." \
+	-command [list AsdfHeaderTreeSave $varname] \
+	-accelerator "${ds9(ctrl)}S"
+    $mb.file add separator
+    $mb.file add command -label "[msgcat::mc {Print}]..." \
+	-command [list SimpleTextPrint $varname] \
+	-accelerator "${ds9(ctrl)}P"
+    $mb.file add separator
+    $mb.file add command -label "[msgcat::mc {View as Text}]..." \
+	-command [list AsdfHeaderText $frame]
+    $mb.file add separator
+    $mb.file add command -label [msgcat::mc {Close}] \
+	-command [list AsdfHeaderTreeDestroy $varname] \
+	-accelerator "${ds9(ctrl)}W"
+
+    $mb add cascade -label [msgcat::mc {Edit}] -menu $mb.edit
+    ThemeMenu $mb.edit
+    $mb.edit add command -label [msgcat::mc {Copy}] \
+	-command [list AsdfHeaderTreeCopy $varname] \
+	-accelerator "${ds9(ctrl)}C"
+    $mb.edit add separator
+    $mb.edit add command -label "[msgcat::mc {Find}]..." \
+	-command [list AsdfHeaderTreeFind $varname] \
+	-accelerator "${ds9(ctrl)}F"
+    $mb.edit add command -label [msgcat::mc {Find Next}] \
+	-command [list AsdfHeaderTreeFindNext $varname] \
+	-accelerator "${ds9(ctrl)}G"
+    $mb.edit add separator
+    $mb.edit add command -label [msgcat::mc {Expand All}] \
+	-command [list AsdfHeaderTreeOpen $varname 1]
+    $mb.edit add command -label [msgcat::mc {Collapse All}] \
+	-command [list AsdfHeaderTreeOpen $varname 0]
+
+    # the directives: everything before the document's `---'
+    set directives {}
+    foreach line [split $tree \n] {
+	if {[string match ---* $line]} {
+	    break
+	}
+	lappend directives $line
+    }
+    set var(text) $w.text
+    roText::roText $var(text)
+    $var(text) configure -height [llength $directives] -width 80 \
+	-wrap none -fg [ThemeTreeForeground] -bg [ThemeTreeBackground] \
+	-state normal
+    $var(text) insert end [join $directives \n]
+
+    # the document
+    set f [ttk::frame $w.tf]
+    set tv [ttk::treeview $f.tree \
+		-yscroll [list $f.yscroll set] \
+		-xscroll [list $f.xscroll set] \
+		-selectmode extended \
+		-columns {tag value} \
+		-height 24 \
+	       ]
+    set var(tv) $tv
+    ttk::scrollbar $f.yscroll -command [list $tv yview]
+    ttk::scrollbar $f.xscroll -command [list $tv xview] -orient horizontal
+    $tv heading #0 -text [msgcat::mc {Node}] -anchor w
+    $tv heading tag -text [msgcat::mc {Tag}] -anchor w
+    $tv heading value -text [msgcat::mc {Value}] -anchor w
+    $tv column #0 -width 260 -stretch 0
+    $tv column tag -width 260 -stretch 0
+    $tv column value -width 360 -stretch 1
+
+    AsdfFillYamlTree $varname $nodes
+
+    grid $tv $f.yscroll -sticky news
+    grid $f.xscroll -sticky ew
+    grid rowconfigure $f 0 -weight 1
+    grid columnconfigure $f 0 -weight 1
+
+    pack $var(text) -side top -fill x
+    pack [ttk::separator $w.sep -orient horizontal] -side top -fill x
+    pack $f -side top -fill both -expand true
+
+    bind $tv <<Copy>> [list AsdfHeaderTreeCopy $varname]
+    bind $w <<Close>> [list AsdfHeaderTreeDestroy $varname]
+    bind $w <<Save>> [list AsdfHeaderTreeSave $varname]
+    bind $w <<Print>> [list SimpleTextPrint $varname]
+    bind $w <<Find>> [list AsdfHeaderTreeFind $varname]
+    bind $w <<FindNext>> [list AsdfHeaderTreeFindNext $varname]
+}
+
+proc AsdfHeaderTreeContents {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    return $var(tree)
+}
+
+proc AsdfHeaderTreeSave {varname} {
+    upvar #0 $varname var
+    global $varname
+    global asdf
+    global yamlfbox
+
+    # suggest the ASDF file's own name, as YAML
+    set yamlfbox(file) "[file rootname [file tail $asdf(file,$var(frame))]].yaml"
+    SimpleTextSaveFile $varname
+}
+
+# Find searches the nodes in document order (depth first), matching a
+# node's key (in a mapping), its tag (only if explicit) and a scalar's
+# value, as a case-insensitive regexp like the text view's Find.
+proc AsdfHeaderTreeFind {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    set result $var(search)
+    if {[EntryDialog [msgcat::mc {Search}] \
+	     [msgcat::mc {Enter Search Expression}] 40 result]} {
+	# we might have been closed while waiting
+	if {![info exists $varname]} {
+	    return
+	}
+	set var(search) $result
+	AsdfHeaderTreeSearch $varname 0
+    }
+}
+
+proc AsdfHeaderTreeFindNext {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    if {$var(search) eq {}} {
+	return
+    }
+    set sel [lindex [$var(tv) selection] 0]
+    AsdfHeaderTreeSearch $varname [expr {$sel eq {} ? 0 : $sel + 1}]
+}
+
+# Selects the first node at or after `from' that matches, wrapping around.
+proc AsdfHeaderTreeSearch {varname from} {
+    upvar #0 $varname var
+    global $varname
+
+    set nn $var(nnodes)
+    for {set ii 0} {$ii < $nn} {incr ii} {
+	set id [expr {($from + $ii) % $nn}]
+	foreach str $var(match,$id) {
+	    if {[catch {regexp -nocase -- $var(search) $str} hit]} {
+		Error "[msgcat::mc {Invalid search expression}]: $var(search)"
+		return
+	    }
+	    if {$hit} {
+		$var(tv) see $id
+		$var(tv) selection set [list $id]
+		$var(tv) focus $id
+		return
+	    }
+	}
+    }
+    Error "$var(search) [msgcat::mc {Not Found}]"
+}
+
+proc AsdfHeaderTreeDestroy {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    if {[info exists var(top)] && [winfo exists $var(top)]} {
+	destroy $var(top)
+	destroy $var(mb)
+    }
+    unset -nocomplain $varname
+}
+
+# Inserts every node of `fitsy asdf yaml' into the dialog's treeview, item
+# id being the node's index. Collections show their size, scalars their
+# value on one line; the full text is what Copy gives.
+proc AsdfFillYamlTree {varname nodes} {
+    upvar #0 $varname var
+    global $varname
+    global asdftree
+
+    set tv $var(tv)
+
+    set nchild {}
+    foreach node $nodes {
+	dict incr nchild [lindex $node 0]
+    }
+
+    set ii 0
+    foreach node $nodes {
+	lassign $node parent kind label tag anchor value keystart start end
+
+	if {$parent < 0} {
+	    set pid {}
+	    set depth 0
+	    set label [msgcat::mc {(document)}]
+	} else {
+	    set pid $parent
+	    set depth [expr {$var(depth,$parent) + 1}]
+	}
+	set var(depth,$ii) $depth
+	set var(span,$ii) [list $keystart $start $end]
+
+	# what Find matches: the key, an explicit tag, a scalar's value
+	set var(match,$ii) {}
+	if {$parent >= 0 && [lindex $nodes $parent 1] eq {m}} {
+	    lappend var(match,$ii) $label
+	}
+	if {$tag ne {}} {
+	    lappend var(match,$ii) $tag
+	}
+	if {$kind eq {v}} {
+	    lappend var(match,$ii) $value
+	}
+
+	if {[lindex $nodes $parent 1] eq {s}} {
+	    set label "\[$label\]"
+	}
+
+	set nn [expr {[dict exists $nchild $ii] ? [dict get $nchild $ii] : 0}]
+	switch -- $kind {
+	    m {set vv "{$nn}"}
+	    s {set vv "\[$nn\]"}
+	    a {set vv "*$value"}
+	    default {
+		set vv [string map [list \n { } \r {} \t { }] $value]
+		if {[string length $vv] > 120} {
+		    set vv "[string range $vv 0 116]..."
+		}
+	    }
+	}
+	if {$anchor ne {}} {
+	    append tag " &$anchor"
+	}
+
+	$tv insert $pid end -id $ii -text $label -values [list $tag $vv] \
+	    -open [expr {$depth < $asdftree(headerdepth)}]
+	incr ii
+    }
+    set var(nnodes) $ii
+}
+
+proc AsdfHeaderTreeOpen {varname open} {
+    upvar #0 $varname var
+    global $varname
+
+    set todo [$var(tv) children {}]
+    while {$todo ne {}} {
+	set todo [lassign $todo id]
+	$var(tv) item $id -open $open
+	lappend todo {*}[$var(tv) children $id]
+    }
+}
+
+# Copies the selected nodes' source text; with nothing selected in the tree
+# but a selection in the directives, copies that instead.
+proc AsdfHeaderTreeCopy {varname} {
+    upvar #0 $varname var
+    global $varname
+
+    set sel [$var(tv) selection]
+    if {$sel eq {}} {
+	if {[$var(text) tag ranges sel] ne {}} {
+	    clipboard clear -displayof $var(top)
+	    clipboard append -displayof $var(top) \
+		[$var(text) get sel.first sel.last]
+	}
+	return
+    }
+
+    set out {}
+    foreach id $sel {
+	lappend out [AsdfYamlNodeText $var(tree) $id {*}$var(span,$id)]
+    }
+    clipboard clear -displayof $var(top)
+    clipboard append -displayof $var(top) [join $out {}]
+}
+
+# The source text of one node, from its key (if it has one) to its end,
+# de-indented so that it stands on its own as YAML. Node 0, the document,
+# is the whole tree.
+proc AsdfYamlNodeText {tree id keystart start end} {
+    if {$id == 0} {
+	return $tree
+    }
+
+    set from [expr {$keystart >= 0 ? $keystart : $start}]
+    set ls [expr {[string last \n $tree [expr {$from - 1}]] + 1}]
+    set col [expr {$from - $ls}]
+
+    # indentation only before the node on its line: take the whole line
+    # and strip that indentation from every line. Otherwise (the node
+    # follows a `- ' or a flow delimiter) keep the first line as it is.
+    set whole [expr {[string trim [string range $tree $ls [expr {$from - 1}]]] eq {}}]
+    if {$whole} {
+	set from $ls
+    }
+
+    set lines [split [string trimright \
+			  [string range $tree $from [expr {$end - 1}]]] \n]
+    set first {}
+    if {!$whole} {
+	set first [lindex $lines 0]
+	set lines [lrange $lines 1 end]
+	set ind $col
+	foreach line $lines {
+	    if {[string trim $line] eq {}} {
+		continue
+	    }
+	    set nn [expr {[string length $line] - \
+			      [string length [string trimleft $line { }]]}]
+	    if {$nn < $ind} {
+		set ind $nn
+	    }
+	}
+	# A key that starts mid-line sits in a flow mapping, and what wraps
+	# onto further lines is its (flow or plain scalar) value - which,
+	# now under a key at column 0, must stay indented.
+	if {$keystart >= 0} {
+	    set ind [expr {max(0, $ind - 2)}]
+	}
+	set col $ind
+    }
+
+    set out {}
+    if {!$whole} {
+	lappend out $first
+    }
+    foreach line $lines {
+	set nn [expr {[string length $line] - \
+			  [string length [string trimleft $line { }]]}]
+	lappend out [string range $line [expr {min($nn, $col)}] end]
+    }
+    # ends with a newline, like any YAML block - and a literal or folded
+    # scalar's final newline is part of its value
+    return "[join $out \n]\n"
 }
 
 # Hands an extracted, self-contained GWCS document to the current frame
@@ -824,13 +1213,144 @@ proc AsdfPathDialog {fn varname} {
 	}
     }
 
-    set rr [DisplayHeaderListDialog $rows [msgcat::mc {Select Array}] 60]
+    set rr [AsdfArrayTreeDialog $entries $rows [msgcat::mc {Select Array}]]
     if {$rr == {}} {
 	return 0
     }
 
-    set var [lindex [lindex $rr 0] 0]
+    set var $rr
     return 1
+}
+
+proc AsdfDef {} {
+    global asdftree
+
+    # levels of the array picker's tree shown open; deeper ones start closed
+    set asdftree(opendepth) 3
+    # same, for the header viewer's tree
+    set asdftree(headerdepth) 2
+}
+
+# Fills treeview `tv' with the file's loadable arrays, as the tree they sit
+# in: only the branches leading to a loadable array appear. `entries' is
+# AsdfArrays' result (tree order), `rows' AsdfLoadableArrays' (the loadable
+# subset, largest first). Item ids are the paths themselves; array items
+# carry the `array' tag and their shape and datatype. A node can be both an
+# array and a branch - a masked array's `mask' is itself loadable.
+# Returns the path of the largest array.
+proc AsdfFillArrayTree {tv entries rows} {
+    global asdftree
+
+    set loadable {}
+    foreach row $rows {
+	dict set loadable [lindex $row 0] 1
+    }
+
+    foreach entry $entries {
+	lassign $entry path source datatype byteorder shapelist
+	if {![dict exists $loadable $path]} {
+	    continue
+	}
+
+	set parent {}
+	set prefix {}
+	set depth 0
+	foreach part [split $path /] {
+	    incr depth
+	    if {$prefix eq {}} {
+		set prefix $part
+	    } else {
+		append prefix /$part
+	    }
+	    if {![$tv exists $prefix]} {
+		$tv insert $parent end -id $prefix -text $part \
+		    -open [expr {$depth < $asdftree(opendepth)}] \
+		    -tags branch
+	    }
+	    set parent $prefix
+	}
+
+	$tv item $path -values [list "\[[join $shapelist {, }]\]" $datatype] \
+	    -tags array
+    }
+
+    return [lindex [lindex $rows 0] 0]
+}
+
+# Modal array picker for an ASDF file. Returns the chosen array's path, or
+# {} if cancelled.
+proc AsdfArrayTreeDialog {entries rows title} {
+    global ed
+
+    set w {.asdftree}
+    set ed(ok) 0
+
+    DialogCreate $w $title ed(ok)
+
+    set f [ttk::frame $w.ed]
+    ttk::scrollbar $f.yscroll -command "$f.tree yview"
+    ttk::scrollbar $f.xscroll -command "$f.tree xview" -orient horizontal
+    set tv [ttk::treeview $f.tree \
+		-yscroll "$f.yscroll set" \
+		-xscroll "$f.xscroll set" \
+		-selectmode browse \
+		-columns {shape datatype} \
+		-height 16 \
+	       ]
+    $tv heading #0 -text [msgcat::mc {Array}] -anchor w
+    $tv heading shape -text [msgcat::mc {Shape}] -anchor w
+    $tv heading datatype -text [msgcat::mc {Type}] -anchor w
+    $tv column #0 -width 300 -stretch 1
+    $tv column shape -width 140 -stretch 0
+    $tv column datatype -width 80 -stretch 0
+    # branches that are not themselves arrays are not choices
+    $tv tag configure branch -foreground gray50
+
+    set first [AsdfFillArrayTree $tv $entries $rows]
+    $tv see $first
+    $tv selection set [list $first]
+    $tv focus $first
+
+    grid $f.tree $f.yscroll -sticky news
+    grid $f.xscroll -sticky ew
+    grid rowconfigure $f 0 -weight 1
+    grid columnconfigure $f 0 -weight 1
+
+    set f [ttk::frame $w.buttons]
+    ttk::button $f.ok -text [msgcat::mc {OK}] \
+	-command [list AsdfArrayTreeOK $tv]
+    ttk::button $f.cancel -text [msgcat::mc {Cancel}] \
+	-command {set ed(ok) 0}
+    pack $f.ok $f.cancel -side left -expand true -padx 2 -pady 4
+
+    ttk::separator $w.sep -orient horizontal
+    pack $w.buttons $w.sep -side bottom -fill x
+    pack $w.ed -side top -fill both -expand true
+
+    # double click chooses an array; on a branch it keeps the treeview's
+    # own open/close behavior
+    bind $tv <Double-1> [list AsdfArrayTreeOK $tv]
+    bind $w <Return> [list AsdfArrayTreeOK $tv]
+
+    DialogWait $w ed(ok) $w.buttons.ok
+
+    set rr {}
+    if {$ed(ok)} {
+	set rr [lindex [$tv selection] 0]
+    }
+
+    destroy $w
+    return $rr
+}
+
+# Accepts the dialog only when the selection is an array.
+proc AsdfArrayTreeOK {tv} {
+    global ed
+
+    set sel [lindex [$tv selection] 0]
+    if {$sel ne {} && [lsearch [$tv item $sel -tags] array] >= 0} {
+	set ed(ok) 1
+    }
 }
 
 # Splits pds9's "<filename>:<path inside the file>" convention into the

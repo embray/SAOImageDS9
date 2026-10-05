@@ -5,6 +5,7 @@
 // libasdf first: card.h, pulled in by the fitsy headers, carries a
 // `using namespace std'
 #include <asdf.h>
+#include <yaml.h>
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -142,6 +143,219 @@ size_t FitsAsdfFile::treeSize()
 {
   tree();
   return tree_.size();
+}
+
+// ------------------------------------------------------------ YAML nodes
+
+// Walks libyaml's event stream for one document, recording every node with
+// its source offsets so that the header viewer can show the tree and copy
+// any node's text verbatim.
+class AsdfYamlWalker {
+ public:
+  yaml_parser_t parser_;
+  vector<FitsAsdfYamlNode>& nodes_;
+  vector<pair<string,string> > tags_;   // {handle, prefix}
+  string error_;
+
+ public:
+  AsdfYamlWalker(vector<FitsAsdfYamlNode>& nn) : nodes_(nn) {}
+
+  int next(yaml_event_t* ev) {
+    if (yaml_parser_parse(&parser_, ev))
+      return 1;
+    char buf[512];
+    snprintf(buf, sizeof(buf), "YAML error at line %lu: %s",
+	     (unsigned long)parser_.problem_mark.line+1,
+	     parser_.problem ? parser_.problem : "unknown");
+    error_ = buf;
+    return 0;
+  }
+
+  string shortTag(const yaml_char_t* tag) {
+    if (!tag)
+      return string();
+    string tt = (const char*)tag;
+    for (size_t ii=0; ii<tags_.size(); ii++) {
+      const string& pp = tags_[ii].second;
+      if (!tt.compare(0, pp.size(), pp))
+	return tags_[ii].first + tt.substr(pp.size());
+    }
+    return "!<" + tt + ">";
+  }
+
+  static string str(const yaml_char_t* ss) {
+    return ss ? string((const char*)ss) : string();
+  }
+
+  // consumes the events of one node, which starts with *ev
+  int skip(yaml_event_t* ev) {
+    int depth = (ev->type == YAML_SEQUENCE_START_EVENT ||
+		 ev->type == YAML_MAPPING_START_EVENT) ? 1 : 0;
+    yaml_event_delete(ev);
+    while (depth) {
+      yaml_event_t ee;
+      if (!next(&ee))
+	return 0;
+      if (ee.type == YAML_SEQUENCE_START_EVENT ||
+	  ee.type == YAML_MAPPING_START_EVENT)
+	depth++;
+      else if (ee.type == YAML_SEQUENCE_END_EVENT ||
+	       ee.type == YAML_MAPPING_END_EVENT)
+	depth--;
+      yaml_event_delete(&ee);
+    }
+    return 1;
+  }
+
+  // records the node starting with *ev, and everything below it
+  int node(yaml_event_t* ev, int parent, const string& label, long keystart) {
+    FitsAsdfYamlNode nn;
+    nn.parent_ = parent;
+    nn.label_ = label;
+    nn.keystart_ = keystart;
+    nn.start_ = (long)ev->start_mark.index;
+    nn.end_ = (long)ev->end_mark.index;
+
+    switch (ev->type) {
+    case YAML_SCALAR_EVENT:
+      nn.kind_ = 'v';
+      nn.tag_ = shortTag(ev->data.scalar.tag);
+      nn.anchor_ = str(ev->data.scalar.anchor);
+      nn.value_ = string((const char*)ev->data.scalar.value,
+			 ev->data.scalar.length);
+      nodes_.push_back(nn);
+      yaml_event_delete(ev);
+      return 1;
+
+    case YAML_ALIAS_EVENT:
+      nn.kind_ = 'a';
+      nn.value_ = str(ev->data.alias.anchor);
+      nodes_.push_back(nn);
+      yaml_event_delete(ev);
+      return 1;
+
+    case YAML_SEQUENCE_START_EVENT:
+    case YAML_MAPPING_START_EVENT:
+      break;
+
+    default:
+      yaml_event_delete(ev);
+      error_ = "unexpected YAML event";
+      return 0;
+    }
+
+    int isMap = ev->type == YAML_MAPPING_START_EVENT;
+    nn.kind_ = isMap ? 'm' : 's';
+    nn.tag_ = shortTag(isMap ? ev->data.mapping_start.tag :
+		       ev->data.sequence_start.tag);
+    nn.anchor_ = str(isMap ? ev->data.mapping_start.anchor :
+		     ev->data.sequence_start.anchor);
+    yaml_event_delete(ev);
+
+    int id = (int)nodes_.size();
+    nodes_.push_back(nn);
+
+    for (int ii=0; ; ii++) {
+      yaml_event_t ee;
+      if (!next(&ee))
+	return 0;
+
+      if (ee.type == YAML_SEQUENCE_END_EVENT ||
+	  ee.type == YAML_MAPPING_END_EVENT) {
+	nodes_[id].end_ = (long)ee.end_mark.index;
+	yaml_event_delete(&ee);
+	return 1;
+      }
+
+      if (!isMap) {
+	char num[32];
+	snprintf(num, sizeof(num), "%d", ii);
+	if (!node(&ee, id, num, -1))
+	  return 0;
+	continue;
+      }
+
+      // a mapping entry: the key, then its value
+      long ks = (long)ee.start_mark.index;
+      string key;
+      if (ee.type == YAML_SCALAR_EVENT) {
+	key = string((const char*)ee.data.scalar.value,
+		     ee.data.scalar.length);
+	yaml_event_delete(&ee);
+      }
+      else {
+	// a complex key; rare enough to show by position only
+	key = "?";
+	if (!skip(&ee))
+	  return 0;
+      }
+
+      yaml_event_t vv;
+      if (!next(&vv) || !node(&vv, id, key, ks))
+	return 0;
+    }
+  }
+};
+
+int FitsAsdfFile::yamlNodes(vector<FitsAsdfYamlNode>& nodes)
+{
+  nodes.clear();
+  tree();
+
+  AsdfYamlWalker ww(nodes);
+  if (!yaml_parser_initialize(&ww.parser_)) {
+    setError("unable to initialize YAML parser");
+    return 0;
+  }
+  yaml_parser_set_input_string(&ww.parser_,
+			       (const unsigned char*)tree_.data(),
+			       tree_.size());
+
+  // only the first document: an ASDF file has exactly one
+  int ok = 1;
+  int done = 0;
+  while (ok && !done) {
+    yaml_event_t ev;
+    if (!ww.next(&ev)) {
+      ok = 0;
+      break;
+    }
+
+    switch (ev.type) {
+    case YAML_DOCUMENT_START_EVENT:
+      for (yaml_tag_directive_t* tt=ev.data.document_start.tag_directives.start;
+	   tt != ev.data.document_start.tag_directives.end; tt++)
+	ww.tags_.push_back(pair<string,string>(AsdfYamlWalker::str(tt->handle),
+					       AsdfYamlWalker::str(tt->prefix)));
+      // YAML's default handles, after any the document redefines
+      ww.tags_.push_back(pair<string,string>("!!", "tag:yaml.org,2002:"));
+      ww.tags_.push_back(pair<string,string>("!", "!"));
+      yaml_event_delete(&ev);
+      {
+	yaml_event_t root;
+	ok = ww.next(&root) && ww.node(&root, -1, string(), -1);
+      }
+      done = 1;
+      break;
+
+    case YAML_STREAM_END_EVENT:
+      yaml_event_delete(&ev);
+      done = 1;
+      break;
+
+    default:
+      yaml_event_delete(&ev);
+      break;
+    }
+  }
+
+  yaml_parser_delete(&ww.parser_);
+
+  if (!ok) {
+    setError("%s", ww.error_.c_str());
+    return 0;
+  }
+  return 1;
 }
 
 const FitsAsdfNode* FitsAsdfFile::node(int ii)

@@ -50,6 +50,21 @@ class FitsAsdfNode {
   FitsAsdfNode();
 };
 
+// One node of the YAML tree, for the header viewer. Offsets are character
+// (not byte) indices into tree(), as libyaml reports them.
+class FitsAsdfYamlNode {
+ public:
+  int parent_;               // index of the parent node, -1 for the root
+  char kind_;                // m(apping) s(equence) v(scalar) a(lias)
+  std::string label_;        // mapping key or sequence index
+  std::string tag_;          // shortened via the document's %TAG handles
+  std::string anchor_;
+  std::string value_;        // scalar value, or alias name
+  long keystart_;            // start of the mapping key, -1 if none
+  long start_;
+  long end_;
+};
+
 class FitsAsdfFile {
  protected:
   struct asdf_file* file_;
@@ -78,6 +93,10 @@ class FitsAsdfFile {
   // the YAML tree, verbatim
   const char* tree();
   size_t treeSize();
+
+  // the tree's nodes, in document order; 0 on a YAML error, with error()
+  // set
+  int yamlNodes(std::vector<FitsAsdfYamlNode>&);
 
   int nnode() {return (int)nodes_.size();}
   const FitsAsdfNode* node(int ii);

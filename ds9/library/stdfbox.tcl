@@ -400,6 +400,15 @@ proc InitDialogBox {} {
 			     [list {TXT} {*.txt}] \
 			    ]
 
+    # an ASDF file's tree, saved from the header viewer, is YAML
+    global yamlfbox
+    set yamlfbox(file) {ds9.yaml}
+    set yamlfbox(dir) {}
+    set yamlfbox(types) [list \
+			     [list {YAML} {*.yaml}] \
+			     [list {YAML} {*.yml}] \
+			    ]
+
     global tclfbox
     set tclfbox(file) {ds9.tcl}
     set tclfbox(dir) {}

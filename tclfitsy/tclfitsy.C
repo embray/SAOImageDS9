@@ -123,7 +123,7 @@ int TclFITSY::asdf(int argc, const char* argv[])
 {
   if (argc<4) {
     Tcl_AppendResult(interp_,
-		     "usage: fitsy asdf ?tree|arrays|block? ?filename? ...",
+		     "usage: fitsy asdf ?tree|arrays|yaml|block? ?filename? ...",
 		     NULL);
     return TCL_ERROR;
   }
@@ -202,6 +202,39 @@ int TclFITSY::asdf(int argc, const char* argv[])
 	Tcl_ListObjAppendElement(interp_, row, Tcl_NewStringObj("",-1));
 
       Tcl_ListObjAppendElement(interp_, list, row);
+    }
+
+    Tcl_SetObjResult(interp_, list);
+    return TCL_OK;
+  }
+
+  if (!strcmp(which,"yaml")) {
+    // One element per YAML node, in document order; a node's parent is
+    // referred to by its index in this list (-1 for the root):
+    //   {parent kind label tag anchor value keystart start end}
+    // kind is m(apping), s(equence), v (scalar) or a(lias); the offsets
+    // are character indices into `fitsy asdf tree'.
+    vector<FitsAsdfYamlNode> nodes;
+    if (!aa.yamlNodes(nodes)) {
+      Tcl_AppendResult(interp_, "fitsy asdf yaml: ",
+		       aa.error() ? aa.error() : "unable to parse", NULL);
+      return TCL_ERROR;
+    }
+
+    Tcl_Obj* list = Tcl_NewListObj(0,NULL);
+    for (size_t ii=0; ii<nodes.size(); ii++) {
+      const FitsAsdfYamlNode& nn = nodes[ii];
+      Tcl_Obj* row[9];
+      row[0] = Tcl_NewIntObj(nn.parent_);
+      row[1] = Tcl_NewStringObj(&nn.kind_, 1);
+      row[2] = Tcl_NewStringObj(nn.label_.c_str(), (Tcl_Size)nn.label_.size());
+      row[3] = Tcl_NewStringObj(nn.tag_.c_str(), (Tcl_Size)nn.tag_.size());
+      row[4] = Tcl_NewStringObj(nn.anchor_.c_str(), (Tcl_Size)nn.anchor_.size());
+      row[5] = Tcl_NewStringObj(nn.value_.c_str(), (Tcl_Size)nn.value_.size());
+      row[6] = Tcl_NewWideIntObj(nn.keystart_);
+      row[7] = Tcl_NewWideIntObj(nn.start_);
+      row[8] = Tcl_NewWideIntObj(nn.end_);
+      Tcl_ListObjAppendElement(interp_, list, Tcl_NewListObj(9, row));
     }
 
     Tcl_SetObjResult(interp_, list);
